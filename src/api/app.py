@@ -1,5 +1,6 @@
 """
 FastAPI application for LangManus.
+LangManus 的 FastAPI 应用程序。
 """
 
 import json
@@ -17,30 +18,33 @@ from src.graph import build_graph
 from src.config import TEAM_MEMBERS
 from src.service.workflow_service import run_agent_workflow
 
-# Configure logging
+# 配置日志
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# 创建 FastAPI 应用实例
 app = FastAPI(
     title="LangManus API",
     description="API for LangManus LangGraph-based agent workflow",
     version="0.1.0",
 )
 
-# Add CORS middleware
+# 添加 CORS 中间件，允许跨域请求
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],  # 允许所有来源的请求
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],  # 允许所有 HTTP 方法
+    allow_headers=["*"],  # 允许所有 HTTP 头
 )
 
-# Create the graph
+# 创建 LangGraph 工作流图
 graph = build_graph()
 
 
 class ContentItem(BaseModel):
+    """
+    内容项模型，用于表示不同类型的消息内容（文本、图像等）
+    """
     type: str = Field(..., description="The type of content (text, image, etc.)")
     text: Optional[str] = Field(None, description="The text content if type is 'text'")
     image_url: Optional[str] = Field(
@@ -49,6 +53,9 @@ class ContentItem(BaseModel):
 
 
 class ChatMessage(BaseModel):
+    """
+    聊天消息模型，表示单条对话消息
+    """
     role: str = Field(
         ..., description="The role of the message sender (user or assistant)"
     )
@@ -59,6 +66,9 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    """
+    聊天请求模型，包含完整的对话历史和配置选项
+    """
     messages: List[ChatMessage] = Field(..., description="The conversation history")
     debug: Optional[bool] = Field(False, description="Whether to enable debug logging")
     deep_thinking_mode: Optional[bool] = Field(
@@ -72,26 +82,26 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat/stream")
 async def chat_endpoint(request: ChatRequest, req: Request):
     """
-    Chat endpoint for LangGraph invoke.
+    聊天流式响应端点，通过 LangGraph 调用代理工作流
 
     Args:
-        request: The chat request
-        req: The FastAPI request object for connection state checking
+        request: 聊天请求对象，包含消息历史和配置选项
+        req: FastAPI 请求对象，用于检查连接状态
 
     Returns:
-        The streamed response
+        使用 Server-Sent Events 的流式响应
     """
     try:
-        # Convert Pydantic models to dictionaries and normalize content format
+        # 将 Pydantic 模型转换为字典并规范化内容格式
         messages = []
         for msg in request.messages:
             message_dict = {"role": msg.role}
 
-            # Handle both string content and list of content items
+            # 处理两种不同格式的内容：字符串或内容项列表
             if isinstance(msg.content, str):
                 message_dict["content"] = msg.content
             else:
-                # For content as a list, convert to the format expected by the workflow
+                # 对于列表类型的内容，转换为工作流期望的格式
                 content_items = []
                 for item in msg.content:
                     if item.type == "text" and item.text:
@@ -106,6 +116,10 @@ async def chat_endpoint(request: ChatRequest, req: Request):
             messages.append(message_dict)
 
         async def event_generator():
+            """
+            事件生成器，用于创建 SSE 流
+            从代理工作流中异步获取事件并转发给客户端
+            """
             try:
                 async for event in run_agent_workflow(
                     messages,
@@ -113,23 +127,25 @@ async def chat_endpoint(request: ChatRequest, req: Request):
                     request.deep_thinking_mode,
                     request.search_before_planning,
                 ):
-                    # Check if client is still connected
+                    # 检查客户端是否仍然连接
                     if await req.is_disconnected():
                         logger.info("Client disconnected, stopping workflow")
                         break
                     yield {
-                        "event": event["event"],
-                        "data": json.dumps(event["data"], ensure_ascii=False),
+                        "event": event["event"],  # 事件类型
+                        "data": json.dumps(event["data"], ensure_ascii=False),  # 事件数据，确保正确处理中文
                     }
             except asyncio.CancelledError:
                 logger.info("Stream processing cancelled")
                 raise
 
+        # 返回 SSE 响应
         return EventSourceResponse(
             event_generator(),
             media_type="text/event-stream",
             sep="\n",
         )
     except Exception as e:
+        # 捕获并记录所有异常，返回 500 错误响应
         logger.error(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
